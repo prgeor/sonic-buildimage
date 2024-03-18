@@ -4,6 +4,7 @@
 #include <errno.h>
 #include <string.h>
 #include <stdlib.h>
+#include <assert.h>
 #include <stdbool.h>
 #include <sys/types.h>
 #include <sys/stat.h>
@@ -13,6 +14,11 @@
 #define MAX_NUM_INSTALL_LINES 48
 #define MAX_NUM_UNITS 128
 #define MAX_BUF_SIZE 512
+
+#define MAX_UNIT_SERVICE_FILENAME 128
+#define MAX_TARGET_DIR_NAME 128
+#define MAX_UNIT_FILE_PREFIX_LEN 64
+#define MAX_TARGET_SUFFIX_LEN  64
 
 const char* UNIT_FILE_PREFIX = "/usr/lib/systemd/system/";
 const char* CONFIG_FILE = "/etc/sonic/generated_services.conf";
@@ -154,17 +160,20 @@ static int get_install_targets_from_line(char* target_string, char* install_type
         if (strstr(target, "%") != NULL) {
             char* prefix = strtok_r(target, ".", &saveptr);
             char* suffix = strtok_r(NULL, ".", &saveptr);
-            int prefix_len = strlen(prefix);
+            int prefix_len = strnlen(prefix, MAX_UNIT_FILE_PREFIX_LEN - 1);
 
             strncpy(final_target, prefix, prefix_len - 2);
             final_target[prefix_len - 2] = '\0';
-            strcat(final_target, ".");
-            strcat(final_target, suffix);
+            strncat(final_target, ".", sizeof("."));
+            assert(PATH_MAX > (final_target, PATH_MAX) + strnlen(suffix, MAX_TARGET_SUFFIX_LEN));
+            strncat(final_target, suffix, MAX_TARGET_SUFFIX_LEN);
         }
         else {
-            strcpy(final_target, target);
+            strncpy(final_target, target, MAX_TARGET_DIR_NAME - 1);
+            final_target[MAX_TARGET_DIR_NAME - 1] = '\0';
         }
-        strcat(final_target, install_type);
+        assert(PATH_MAX > strnlen(final_target, PATH_MAX) + strnlen(install_type, MAX_TARGET_SUFFIX_LEN));
+        strncat(final_target, install_type, MAX_TARGET_SUFFIX_LEN);
 
         free(target);
 
@@ -273,9 +282,11 @@ int get_install_targets(char* unit_file, char* targets[]) {
     char *instance_name;
     char *dot_ptr;
 
-    strcpy(file_path, get_unit_file_prefix());
-    strcat(file_path, unit_file);
-
+    memset(file_path, '\0', PATH_MAX);
+    strncpy(file_path, get_unit_file_prefix(), MAX_UNIT_FILE_PREFIX_LEN - 1);
+    //strcpy(file_path, get_unit_file_prefix());
+    strncat(file_path, unit_file, MAX_UNIT_SERVICE_FILENAME);
+    //strcat(file_path, unit_file);
     instance_name = strdup(unit_file);
     dot_ptr = strchr(instance_name, '.');
     *dot_ptr = '\0';
@@ -413,8 +424,10 @@ static int create_symlink(char* unit, char* target, char* install_dir, int insta
     char* unit_instance;
     int r;
 
-    strcpy(src_path, get_unit_file_prefix());
-    strcat(src_path, unit);
+    strncpy(src_path, get_unit_file_prefix(), MAX_UNIT_FILE_PREFIX_LEN - 1);
+    src_path[MAX_UNIT_FILE_PREFIX_LEN - 1] = '\0';
+    assert(PATH_MAX > strnlen(src_path, MAX_UNIT_FILE_PREFIX_LEN) + strnlen(unit, MAX_UNIT_SERVICE_FILENAME));
+    strncat(src_path, unit, MAX_UNIT_SERVICE_FILENAME);
 
     if (instance < 0) {
         unit_instance = strdup(unit);
@@ -423,11 +436,15 @@ static int create_symlink(char* unit, char* target, char* install_dir, int insta
         unit_instance = insert_instance_number(unit, instance);
     }
 
-    strcpy(final_install_dir, install_dir);
-    strcat(final_install_dir, target);
-    strcpy(dest_path, final_install_dir);
-    strcat(dest_path, "/");
-    strcat(dest_path, unit_instance);
+    strncpy(final_install_dir, install_dir, PATH_MAX - 1);
+    final_install_dir[PATH_MAX - 1] = '\0';
+    assert(PATH_MAX > strnlen(final_install_dir, PATH_MAX) + strnlen(target, PATH_MAX));
+    strncat(final_install_dir, target, PATH_MAX);
+    strncpy(dest_path, final_install_dir, PATH_MAX - 1);
+    dest_path[PATH_MAX - 1] = '\0';
+    strncat(dest_path, "/", 1);
+    assert(PATH_MAX > strnlen(dest_path, PATH_MAX) + strnlen(unit_instance, MAX_UNIT_SERVICE_FILENAME));
+    strncat(dest_path, unit_instance, MAX_UNIT_SERVICE_FILENAME);
 
     free(unit_instance);
 
@@ -586,9 +603,9 @@ int ssg_main(int argc, char **argv) {
     char* unit_files[MAX_NUM_UNITS];
     char install_dir[PATH_MAX];
     char* targets[MAX_NUM_TARGETS];
-    char* unit_instance;
-    char* prefix;
-    char* suffix;
+    char unit_instance[MAX_UNIT_SERVICE_FILENAME];
+    char prefix[MAX_UNIT_FILE_PREFIX_LEN];
+    char suffix[MAX_TARGET_SUFFIX_LEN];
     char* saveptr;
     int num_unit_files;
     int num_targets;
@@ -600,28 +617,35 @@ int ssg_main(int argc, char **argv) {
     }
 
     num_asics = get_num_of_asic();
-    strcpy(install_dir, argv[1]);
-    strcat(install_dir, "/");
+    strncpy(install_dir, argv[1], PATH_MAX - 1);
+    strncat(install_dir, "/", sizeof("/"));
     num_unit_files = get_unit_files(unit_files);
 
     // For each unit file, get the installation targets and install the unit
     for (int i = 0; i < num_unit_files; i++) {
-        unit_instance = strdup(unit_files[i]);
+        strncpy(unit_instance, unit_files[i], MAX_UNIT_SERVICE_FILENAME - 1);
+        unit_instance[MAX_UNIT_SERVICE_FILENAME - 1] = '\0';
+
         if ((num_asics == 1) && strstr(unit_instance, "@") != NULL) {
-            prefix = strdup(strtok_r(unit_instance, "@", &saveptr));
-            suffix = strdup(strtok_r(NULL, "@", &saveptr));
+            memset(prefix, '\0', sizeof(prefix));
+            memset(suffix, '\0', sizeof(suffix));
+            strncpy(prefix, strtok_r(unit_instance, "@", &saveptr), MAX_UNIT_FILE_PREFIX_LEN);
+            prefix[MAX_UNIT_FILE_PREFIX_LEN - 1] = '\0';
+            strncpy(suffix, strtok_r(NULL, "@", &saveptr), MAX_TARGET_SUFFIX_LEN);
+            suffix[MAX_TARGET_SUFFIX_LEN - 1] = '\0';
 
-            strcpy(unit_instance, prefix);
-            strcat(unit_instance, suffix);
+            strncpy(unit_instance, prefix, MAX_UNIT_FILE_PREFIX_LEN - 1);
+            unit_instance[MAX_UNIT_FILE_PREFIX_LEN - 1] = '\0';
+            strncat(unit_instance, suffix, MAX_TARGET_SUFFIX_LEN);
 
-            free(prefix);
-            free(suffix);
+            //free(prefix);
+            //free(suffix);
         }
 
         num_targets = get_install_targets(unit_instance, targets);
         if (num_targets < 0) {
             fprintf(stderr, "Error parsing %s\n", unit_instance);
-            free(unit_instance);
+            //free(unit_instance);
             free(unit_files[i]);
             continue;
         }
@@ -633,7 +657,7 @@ int ssg_main(int argc, char **argv) {
             free(targets[j]);
         }
 
-        free(unit_instance);
+        //free(unit_instance);
         free(unit_files[i]);
     }
 
